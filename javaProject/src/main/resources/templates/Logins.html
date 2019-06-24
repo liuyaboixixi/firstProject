@@ -1,0 +1,51 @@
+<!DOCTYPE HTML>
+<html xmlns:th="http://www.thymeleaf.org">
+<head>
+    <title>暑期实践小项目码匠社区</title>
+    <meta http-equiv="Content-Type" content="text/html; charset=UTF-8"/>
+    <link rel="stylesheet" href="/css/bootstrap.min.css"/>
+    <link rel="stylesheet" href="/css/bootstrap-theme.min.css">
+    <link rel="stylesheet" href="/css/community.css">
+    <script src="/js/jquery-3.4.1.min.js" type="application/javascript"></script>
+    <script src="/js/bootstrap.min.js" type="application/javascript"></script>
+</head>
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body>
+<form class="form-horizontal" action="/Logins" method="post">
+    <div class="form-group">
+        <label for="accountid" class="col-sm-2 control-label">账号：</label>
+        <div class="col-sm-4">
+            <input type="text" class="form-control" th:value="${accountid}" id="accountid" name="accountid" placeholder="账号">
+        </div>
+    </div>
+    <div class="form-group">
+        <label for="password" class="col-sm-2 control-label">密码：</label>
+        <div class="col-sm-4">
+            <input type="password" class="form-control" th:value="${password}" id="password" name="password" placeholder="******">
+        </div>
+    </div>
+    <div class="container-fluid main ">
+        <div class="row">
+            <div class="alert alert-danger col-lg-9 col-md-12 col-sm-12 col-xs-12" th:text="${error}"
+                 th:if="${error != null}"></div>
+            <div class="col-lg-3 col-md-12 col-sm-12 col-xs-12">
+                <button type="submit" class="btn btn-success btn-publish ">
+                    登录
+                </button>
+            </div>
+        </div>
+    </div>
+    <div class="form-group">
+        <div class="col-sm-offset-2 col-sm-10" >
+            <li><a href="/Register">注册</a></li>
+        </div>
+    </div>
+
+
+
+</form>
+</body>
+</html>
