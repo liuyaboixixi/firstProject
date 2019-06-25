@@ -30,4 +30,9 @@ public interface QuestionMapper {
 
     @Update("update question set title = #{title}, description = #{description}, gmt_modified = #{gmtModified}, tag = #{tag} where id = #{id}")
     void update(Question question);
+
+    @Select("select * from question where id =#{id} ")
+    Question selectByQuestion(Integer id);
+    @Update("update question set view_Count=view_Count+1 where id=#{id}")
+    void updateViwe(Question updateQuestion);
 }

@@ -104,4 +104,12 @@ public class QuestionService {
             questionMapper.update(question);
         }
     }
+
+    public  void addView(Integer id) {
+        Question question = questionMapper.selectByQuestion(id);
+        Question updateQuestion = new Question();
+        updateQuestion.setId(question.getId());
+        updateQuestion.setViewCount(question.getViewCount()+1);
+        questionMapper.updateViwe(updateQuestion);
+    }
 }
