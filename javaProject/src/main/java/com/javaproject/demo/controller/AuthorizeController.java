@@ -2,7 +2,6 @@ package com.javaproject.demo.controller;
 
 import com.javaproject.demo.dto.AccesstokenDTO;
 import com.javaproject.demo.dto.GithubUser;
-import com.javaproject.demo.mapper.UserMapper;
 import com.javaproject.demo.model.User;
 import com.javaproject.demo.provider.GithupProvider;
 import com.javaproject.demo.service.UserService;
@@ -13,7 +12,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 
 import javax.servlet.http.Cookie;
-import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.util.UUID;
 
@@ -33,8 +31,6 @@ public class AuthorizeController {
     private String redirecturi;
     @Autowired
     private UserService userService;
-    @Autowired
-    private UserMapper userMapper;
     @GetMapping("/callback")
     public String callback(@RequestParam(name = "code") String code,
                            @RequestParam(name = "state")String state,
@@ -67,4 +63,5 @@ public class AuthorizeController {
             return "redirect:/";
         }
     }
+
 }

@@ -17,7 +17,6 @@ import java.util.UUID;
 public class RegisterController {
     @Autowired
     UserMapper userMapper;
-
     @RequestMapping(value = "/Register",method = {RequestMethod.POST,RequestMethod.GET})
     public String register(@RequestParam(value = "accountid", required = false) String accountid,
                            @RequestParam(value = "password", required = false) String password,
@@ -42,7 +41,7 @@ public class RegisterController {
         user.setPassword(password);
         user.setAccountId(accountid);
         user.setGmtCreate(System.currentTimeMillis());
-        userMapper.insertuser(user);
+        userMapper.insert(user);
         return "redirect:/";
     }
 }

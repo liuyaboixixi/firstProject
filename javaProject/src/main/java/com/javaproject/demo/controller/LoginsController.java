@@ -2,6 +2,7 @@ package com.javaproject.demo.controller;
 
 import com.javaproject.demo.mapper.UserMapper;
 import com.javaproject.demo.model.User;
+import com.javaproject.demo.model.UserExample;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -13,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
-import java.text.CollationKey;
+import java.util.List;
 
 
 @Controller
@@ -21,7 +22,6 @@ public class LoginsController {
 
     @Autowired
     UserMapper userMapper;
-
     @RequestMapping(value = "/Logins",method = {RequestMethod.POST,RequestMethod.GET})
     public String logins(@RequestParam(value = "accountid", required = false) String accountid,
                          @RequestParam(value = "password", required = false) String password,
@@ -37,9 +37,16 @@ public class LoginsController {
             model.addAttribute("error", "密码不能为空");
             return "Logins";
         }
+        UserExample userExample = new UserExample();
+        userExample.createCriteria()
+                .andPasswordEqualTo(password)
+                .andAccountIdEqualTo(accountid);
         User user = new User();
-        user=userMapper.findByAccount_Id(accountid,password);
-       if (user !=null) {
+        List<User> users = userMapper.selectByExample(userExample);
+        if (users.size()!=0){
+            user=users.get(0);
+        }
+        if (user !=null) {
            model.addAttribute("error", "登陆成功");
        }else
        {

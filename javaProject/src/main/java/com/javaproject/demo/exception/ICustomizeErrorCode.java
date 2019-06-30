@@ -1,4 +1,6 @@
 package com.javaproject.demo.exception;
 
-public class ICustomizeErrorCode {
+public interface ICustomizeErrorCode {
+    String getMessage();
+    Integer getCode();
 }

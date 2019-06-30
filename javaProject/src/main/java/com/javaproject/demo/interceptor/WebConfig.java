@@ -1,22 +1,21 @@
-//package com.javaproject.demo.interceptor;
-//
-//import org.springframework.beans.factory.annotation.Autowired;
-//import org.springframework.context.annotation.Configuration;
-//import org.springframework.web.servlet.config.annotation.EnableWebMvc;
-//import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
-//import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
-//
-//
-//@Configuration
+package com.javaproject.demo.interceptor;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
+import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+
+/**
+ * Created by codedrinker on 2019/5/16.
+ */
+@Configuration
 //@EnableWebMvc
-//public class WebConfig implements WebMvcConfigurer {
-//        @Autowired
-//        private  SessionInterceptor sessionInterceptor;
-//    @Override
-//    public void addInterceptors(InterceptorRegistry registry) {
-//        //addPathPatterns("/**")  把那些地址进行拦截
-//        //.excludePathPatterns("/admin/**")  把那些地址不进行拦截
-//       // registry.addInterceptor(sessionInterceptor).addPathPatterns("/**");
-//
-//    }
-//}
+public class WebConfig implements WebMvcConfigurer {
+
+    @Autowired
+    private SessionInterceptor sessionInterceptor;
+
+    @Override
+    public void addInterceptors(InterceptorRegistry registry) {
+        registry.addInterceptor(sessionInterceptor).addPathPatterns("/**");
+    }
+}

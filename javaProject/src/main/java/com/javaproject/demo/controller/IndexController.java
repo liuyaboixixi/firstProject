@@ -4,6 +4,7 @@ import com.javaproject.demo.dto.PaginationDTO;
 
 import com.javaproject.demo.mapper.UserMapper;
 import com.javaproject.demo.model.User;
+import com.javaproject.demo.model.UserExample;
 import com.javaproject.demo.service.QuestionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
+import java.util.List;
 
 @Controller
 public class IndexController {
@@ -33,9 +35,12 @@ public class IndexController {
                 if (cookie.getName().equals("token"))//成功
                 {
                     String token = cookie.getValue();
-                    User user = userMapper.findByToken(token);
-                    if (user != null) {
-                        request.getSession().setAttribute("user", user);
+                    UserExample userExample = new UserExample();
+                    userExample.createCriteria()
+                            .andTokenEqualTo(token);
+                    List<User> users = userMapper.selectByExample(userExample);
+                    if (users.size() != 0) {
+                        request.getSession().setAttribute("user", users.get(0));
                     }
                     break;
                 }
