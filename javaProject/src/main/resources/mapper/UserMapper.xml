@@ -150,10 +150,10 @@
     -->
     insert into USER (ID, ACCOUNT_ID, NAME, 
       TOKEN, GMT_CREATE, GMT_MODIFIED, 
-      PASSWORD, AVATARURL)
+      PASSWORD)
     values (#{id,jdbcType=BIGINT}, #{accountId,jdbcType=VARCHAR}, #{name,jdbcType=VARCHAR}, 
       #{token,jdbcType=VARCHAR}, #{gmtCreate,jdbcType=BIGINT}, #{gmtModified,jdbcType=BIGINT}, 
-      #{password,jdbcType=VARCHAR}, #{avatarurl,jdbcType=VARCHAR})
+      #{password,jdbcType=VARCHAR})
   </insert>
   <insert id="insertSelective" parameterType="com.javaproject.demo.model.User">
     <!--

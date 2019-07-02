@@ -3,6 +3,7 @@ package com.javaproject.demo.controller;
 import com.javaproject.demo.mapper.UserMapper;
 import com.javaproject.demo.model.User;
 import com.javaproject.demo.model.UserExample;
+import com.javaproject.demo.service.UserService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
@@ -15,17 +16,20 @@ import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import java.util.List;
+import java.util.UUID;
 
 
 @Controller
 public class LoginsController {
-
+    @Autowired
+    UserService userService;
     @Autowired
     UserMapper userMapper;
     @RequestMapping(value = "/Logins",method = {RequestMethod.POST,RequestMethod.GET})
     public String logins(@RequestParam(value = "accountid", required = false) String accountid,
                          @RequestParam(value = "password", required = false) String password,
                          HttpServletRequest request,
+                         HttpServletResponse response,
                          Model model) {
         model.addAttribute("accountid", accountid);
         model.addAttribute("password", password);
@@ -53,7 +57,15 @@ public class LoginsController {
            model.addAttribute("error","登录失败");
            return "Logins";
        }
-        return "publish";
+
+
+        userService.createOrUpdate(user);
+        //user.setAvatarUrl(githubUser.getAvatar_url());
+
+        // 登录成功，写cookie 和session
+        response.addCookie(new Cookie("token",user.getToken()));
+        return "redirect:/"; //redirect 重定向到我所制定的页面去
+        //return "publish";
     }
     @GetMapping("/logout")
         public String logout(HttpServletRequest request,
