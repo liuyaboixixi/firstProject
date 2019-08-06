@@ -3,6 +3,7 @@ package com.javaproject.demo.controller;
 import com.javaproject.demo.dto.CommentDTO;
 import com.javaproject.demo.dto.QuestionDTO;
 import com.javaproject.demo.enums.CommentTypeEnum;
+import com.javaproject.demo.model.Question;
 import com.javaproject.demo.service.CommentService;
 import com.javaproject.demo.service.QuestionService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -25,11 +26,13 @@ public class QuestionController {
     @GetMapping("/question/{id}")
     public String question(@PathVariable(name = "id") Long id, Model model) {
         QuestionDTO questionDTO = questionService.getById(id);
+        List<QuestionDTO> relatedQuestions = questionService.selectRelated(questionDTO);
         List<CommentDTO> comments = commentService.listByTargetId(id, CommentTypeEnum.QUESTION);
         //累加阅读数
         questionService.incView(id);
         model.addAttribute("question", questionDTO);
         model.addAttribute("comments", comments);
+        model.addAttribute("relatedQuestions",relatedQuestions);
         return "question";
     }
 }

@@ -14,16 +14,45 @@
     </resultMap>
 
     <update id="incView" parameterType="com.javaproject.demo.model.Question">
-    update QUESTION
+    update yuyin.question
     set
     VIEW_COUNT = VIEW_COUNT + #{viewCount,jdbcType=INTEGER}
     where id = #{id}
     </update>
 
     <update id="incCommentCount" parameterType="com.javaproject.demo.model.Question">
-    update QUESTION
+    update yuyin.question
     set
     COMMENT_COUNT = COMMENT_COUNT + #{commentCount,jdbcType=INTEGER}
     where id = #{id}
     </update>
+
+    <select id="selectRelated" parameterType="com.javaproject.demo.model.Question" resultMap="BaseResultMap">
+        select *
+        from yuyin.question where id !=#{id} and tag regexp #{tag}
+
+    </select>
+
+    <select id="countBySearch" parameterType="com.javaproject.demo.dto.QuestionQueryDTO"
+            resultType="java.lang.Integer">
+        select count(*)
+        from yuyin.question
+        <where>
+            <if test="search !=null">
+                and TITLE regexp #{search}
+            </if>
+        </where>
+    </select>
+
+    <select id="selectBySearch" parameterType="com.javaproject.demo.dto.QuestionQueryDTO"
+            resultMap="BaseResultMap">
+        select  * from question
+        <where>
+            <if test="search !=null">
+                and TITLE regexp #{search}
+            </if>
+        </where>
+        order by gmt_create desc
+        limit #{page},#{size}
+    </select>
 </mapper>

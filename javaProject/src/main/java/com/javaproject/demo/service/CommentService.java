@@ -5,10 +5,7 @@ import com.javaproject.demo.enums.CommentTypeEnum;
 import com.javaproject.demo.exception.CustomizeErrorCode;
 import com.javaproject.demo.exception.CustomizeException;
 
-import com.javaproject.demo.mapper.CommentMapper;
-import com.javaproject.demo.mapper.QuestionExtMapper;
-import com.javaproject.demo.mapper.QuestionMapper;
-import com.javaproject.demo.mapper.UserMapper;
+import com.javaproject.demo.mapper.*;
 import com.javaproject.demo.model.*;
 import org.springframework.beans.BeanUtils;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -68,7 +65,7 @@ public class CommentService {
         commentExample.createCriteria()
                 .andParentIdEqualTo(id)
                 .andTypeEqualTo(type.getType());
-        commentExample.setOrderByClause("gmt_create desc");
+        commentExample.setOrderByClause("GMT_CREATE desc");
         List<Comment> comments = commentMapper.selectByExample(commentExample);
 
         if (comments.size() == 0) {

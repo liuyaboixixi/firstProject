@@ -28,7 +28,8 @@ public class IndexController {
     public String index(HttpServletRequest request,
                         Model model,
                         @RequestParam(name = "page", defaultValue = "1") Integer page,
-                        @RequestParam(name = "size", defaultValue = "5") Integer size) {//当访问首页的时候  查找Cookie    到数据库里去查
+                        @RequestParam(name = "size", defaultValue = "5") Integer size,
+                        @RequestParam(name = "search", required = false) String search) {//当访问首页的时候  查找Cookie    到数据库里去查
         Cookie[] cookies = request.getCookies();
         if (cookies != null && cookies.length != 0) {
             for (Cookie cookie : cookies) {
@@ -46,7 +47,7 @@ public class IndexController {
                 }
             }
         }
-        PaginationDTO pagination = questionService.list(page, size);
+        PaginationDTO pagination = questionService.list(search,page, size);
         model.addAttribute("pagination", pagination);
         return "index";
     }
