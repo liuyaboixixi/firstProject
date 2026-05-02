@@ -1,0 +1,36 @@
+workflow:
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop")'
+      when: always
+    - when: never
+
+stages:
+  - sql-review
+
+sql_review:
+  stage: sql-review
+  variables:
+    PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    AUDIT_MAX_ROWS: "1000"
+    AUDIT_FAIL_ON_FULL_SCAN_ROWS: "500"
+  before_script:
+    - python3 --version
+    - pip3 install -r ci/sql-review/requirements.txt
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+  script:
+    - python3 ci/sql-review/run_sql_review.py --repo . --rules ci/sql-review/rules/mysql_rules.yaml --output build/sql-review/sql_review.json
+    - python3 ci/sql-review/publish_sql_review.py --input build/sql-review/sql_review.json --markdown-output build/sql-review/sql_review_report.md --comment-output build/sql-review/sql_review_comment.md
+    - python3 -c "import json,sys; data=json.load(open('build/sql-review/sql_review.json', encoding='utf-8')); sys.exit(1 if data.get('block_merge') else 0)"
+  after_script:
+    - python3 ci/sql-review/publish_sql_review.py --input build/sql-review/sql_review.json --markdown-output build/sql-review/sql_review_report.md --comment-output build/sql-review/sql_review_comment.md --post-gitlab || true
+  artifacts:
+    when: always
+    paths:
+      - build/sql-review/sql_review.json
+      - build/sql-review/sql_review_report.md
+      - build/sql-review/sql_review_comment.md
+    expire_in: 7 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop")'
+      when: on_success
+    - when: never

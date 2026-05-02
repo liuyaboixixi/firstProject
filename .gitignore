@@ -25,3 +25,14 @@ hs_err_pid*
 # Python cache for GitHub Actions SQL review scripts
 __pycache__/
 *.pyc
+
+# SQL review outputs
+/build/
+
+# Java runtime logs
+logs/
+*.log.*
+
+# Windows junk files
+desktop.ini
+Thumbs.db
