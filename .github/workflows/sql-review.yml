@@ -1,0 +1,59 @@
+name: MyBatis SQL Review
+
+on:
+  pull_request:
+    branches:
+      - master
+      - main
+      - develop
+
+jobs:
+  sql-review:
+    runs-on: ubuntu-latest
+    env:
+      SQL_REVIEW_DB_HOST: ${{ secrets.SQL_REVIEW_DB_HOST }}
+      SQL_REVIEW_DB_PORT: ${{ secrets.SQL_REVIEW_DB_PORT }}
+      SQL_REVIEW_DB_NAME: ${{ secrets.SQL_REVIEW_DB_NAME }}
+      SQL_REVIEW_DB_USER: ${{ secrets.SQL_REVIEW_DB_USER }}
+      SQL_REVIEW_DB_PASSWORD: ${{ secrets.SQL_REVIEW_DB_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python --version
+          pip install -r ci/sql-review/requirements.txt
+
+      - name: Detect changed files
+        run: |
+          git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.head.sha }}" > changed_files.txt || true
+          cat changed_files.txt
+
+      - name: Run SQL review
+        run: |
+          python ci/sql-review/sql_review.py \
+            --repo . \
+            --changed-files $(tr '\n' ' ' < changed_files.txt) \
+            --rules ci/sql-review/rules/mysql_rules.yaml \
+            --output-sql changed_sql.json \
+            --output-json sql-review.json \
+            --output-markdown gl-sql-review.md
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sql-review-artifacts
+          path: |
+            changed_sql.json
+            sql-review.json
+            gl-sql-review.md

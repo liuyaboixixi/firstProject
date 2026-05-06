@@ -2,6 +2,7 @@ block_levels:
   - P0
   - P1
 long_in_threshold: 5
+explain_rows_threshold: 10000
 pagination_keywords:
   - limit
   - page
