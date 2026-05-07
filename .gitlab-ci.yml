@@ -1,5 +1,6 @@
 workflow:
   rules:
+    # 只在 Merge Request 流水线中触发，并且仅关注合并到主干/开发分支的场景。
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop")'
       when: always
     - when: never
@@ -11,17 +12,24 @@ sql_review:
   stage: sql-review
   variables:
     PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    # EXPLAIN 扫描行数达到该值时，仅做提示。
     AUDIT_MAX_ROWS: "1000"
+    # EXPLAIN 出现全表扫描且扫描行数达到该值时，按更高风险处理。
     AUDIT_FAIL_ON_FULL_SCAN_ROWS: "500"
   before_script:
     - python3 --version
     - pip3 install -r ci/sql-review/requirements.txt
+    # 拉取目标分支，供审核脚本计算“目标分支...当前提交”的文件差异。
     - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
   script:
+    # 生成结构化审核结果，结果里包含 findings、summary、block_merge 等核心字段。
     - python3 ci/sql-review/run_sql_review.py --repo . --rules ci/sql-review/rules/mysql_rules.yaml --output build/sql-review/sql_review.json
+    # 把 JSON 结果渲染成 Markdown 报告和评论内容，供 MR 查看。
     - python3 ci/sql-review/publish_sql_review.py --input build/sql-review/sql_review.json --markdown-output build/sql-review/sql_review_report.md --comment-output build/sql-review/sql_review_comment.md
+    # 只要脚本判断 block_merge=true，就让当前 job 失败，从而阻止 MR 合并。
     - python3 -c "import json,sys; data=json.load(open('build/sql-review/sql_review.json', encoding='utf-8')); sys.exit(1 if data.get('block_merge') else 0)"
   after_script:
+    # 评论发布失败不应影响主审核结论，因此这里显式吞掉错误。
     - python3 ci/sql-review/publish_sql_review.py --input build/sql-review/sql_review.json --markdown-output build/sql-review/sql_review_report.md --comment-output build/sql-review/sql_review_comment.md --post-gitlab || true
   artifacts:
     when: always
@@ -31,6 +39,7 @@ sql_review:
       - build/sql-review/sql_review_comment.md
     expire_in: 7 days
   rules:
+    # job 级规则与 workflow 保持一致，避免在非目标 MR 中运行。
     - if: '$CI_PIPELINE_SOURCE == "merge_request_event" && ($CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "master" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "main" || $CI_MERGE_REQUEST_TARGET_BRANCH_NAME == "develop")'
       when: on_success
     - when: never

@@ -16,6 +16,7 @@ def load_review(path: Path) -> dict:
 
 
 def render_markdown(data: dict) -> str:
+    # 先按风险等级分组，方便在 MR 里优先看 P0 / P1。
     grouped = defaultdict(list)
     for finding in data.get("findings", []):
         grouped[finding["level"]].append(finding)
@@ -82,6 +83,7 @@ def render_markdown(data: dict) -> str:
 
 
 def maybe_run_qwen(review_json: Path, prompt: Path) -> str | None:
+    # Qwen 是可选增强：存在则生成更适合评论区阅读的总结，不存在则直接使用 Markdown。
     qwen_path = shutil.which("qwen")
     if not qwen_path:
         fallback_bin = Path.home() / ".npm-global/bin/qwen"
@@ -105,12 +107,13 @@ def maybe_run_qwen(review_json: Path, prompt: Path) -> str | None:
 
 
 def maybe_post_gitlab(comment: str) -> tuple[bool, str]:
+    # 评论发布依赖 GitLab CI 注入的项目、MR 和访问令牌环境变量。
     token = os.getenv("GITLAB_ACCESS_TOKEN")
     project_id = os.getenv("CI_PROJECT_ID")
     mr_iid = os.getenv("CI_MERGE_REQUEST_IID")
     api_base = os.getenv("CI_API_V4_URL")
     if not all([token, project_id, mr_iid, api_base]):
-        return False, "missing gitlab env"
+        return False, "缺少 GitLab 评论发布所需环境变量"
 
     payload = json.dumps({"body": comment}, ensure_ascii=False).encode("utf-8")
     url = f"{api_base}/projects/{project_id}/merge_requests/{mr_iid}/discussions"
@@ -126,15 +129,15 @@ def maybe_post_gitlab(comment: str) -> tuple[bool, str]:
     try:
         with urllib.request.urlopen(request, timeout=20) as response:  # noqa: S310
             response.read()
-        return True, "posted"
+        return True, "发布成功"
     except urllib.error.HTTPError as exc:
-        return False, f"http error {exc.code}"
+        return False, f"HTTP 错误 {exc.code}"
     except Exception as exc:  # noqa: BLE001
         return False, str(exc)
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Render SQL review report, optionally summarize with Qwen, and optionally publish to GitLab.")
+    parser = argparse.ArgumentParser(description="渲染 SQL 审核报告，可选使用 Qwen 生成总结，并可选择发布到 GitLab MR 评论区。")
     parser.add_argument("--input", required=True)
     parser.add_argument("--markdown-output", required=True)
     parser.add_argument("--comment-output")
@@ -163,10 +166,11 @@ def main() -> int:
         comment_output.parent.mkdir(parents=True, exist_ok=True)
         comment_output.write_text(comment, encoding="utf-8")
 
+    # 发布评论只是附加动作，不改变审核主结论；是否忽略失败由调用方决定。
     if args.post_gitlab:
         ok, reason = maybe_post_gitlab(comment)
         if not ok:
-            print(f"gitlab comment publish skipped/failed: {reason}", file=sys.stderr)
+            print(f"GitLab 评论发布跳过或失败：{reason}", file=sys.stderr)
 
     return 0
 

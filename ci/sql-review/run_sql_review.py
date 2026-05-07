@@ -12,9 +12,13 @@ import pymysql
 import yaml
 
 
+# MyBatis XML / 注解里会被识别为 SQL 语句的标签类型。
 SQL_TAGS = {"select", "update", "delete", "insert"}
+# 仅审核这些后缀的文件，避免把普通业务代码也纳入 SQL 扫描。
 SQL_FILE_SUFFIXES = ("Mapper.xml", "Mapper.java", "Repository.java", "DAO.java")
+# 这些动态标签会被保留成占位标记，供后续静态规则判断。
 DYNAMIC_SQL_TAGS = {"if", "choose", "when", "otherwise", "trim", "where", "set", "foreach"}
+# 提取列名时需要排除的 SQL 关键字，避免误把关键字识别成字段名。
 SQL_STOP_WORDS = {
     "and",
     "or",
@@ -45,14 +49,51 @@ SQL_STOP_WORDS = {
 
 
 def normalize_sql(sql: str) -> str:
+    """统一 SQL 文本格式。
+
+    作用：
+    1. 把换行、制表符、多空格压缩成单个空格。
+    2. 去掉首尾空白，方便后续规则和正则匹配。
+
+    输入：
+    - 原始 SQL 字符串，可能来自 XML、注解或动态 SQL 片段。
+
+    输出：
+    - 适合做规则匹配和结果展示的单行 SQL。
+    """
     return re.sub(r"\s+", " ", sql).strip()
 
 
 def load_rules(path: Path) -> dict[str, Any]:
+    """读取 YAML 规则配置。
+
+    作用：
+    - 从 `mysql_rules.yaml` 加载阻断级别、分页关键字、函数关键字等规则参数。
+
+    输入：
+    - 规则文件路径。
+
+    输出：
+    - 规则配置字典，供静态规则和 EXPLAIN 分析复用。
+    """
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 def run_git_diff(repo: Path, target_branch: str | None, commit_sha: str | None) -> list[str]:
+    """获取当前 MR 相对目标分支的变更文件列表。
+
+    作用：
+    - 在 GitLab MR 场景下，只审核 `origin/目标分支...当前提交` 的差异文件。
+    - 如果缺少目标分支或提交信息，则返回空列表，表示本次无法自动定位变更范围。
+
+    输入：
+    - `repo`：仓库根目录。
+    - `target_branch`：MR 目标分支名，通常来自 `CI_MERGE_REQUEST_TARGET_BRANCH_NAME`。
+    - `commit_sha`：当前提交 SHA，通常来自 `CI_COMMIT_SHA`。
+
+    输出：
+    - 变更文件相对路径列表。
+    """
     if not target_branch or not commit_sha:
         return []
     cmd = ["git", "diff", "--name-only", f"origin/{target_branch}...{commit_sha}"]
@@ -63,10 +104,33 @@ def run_git_diff(repo: Path, target_branch: str | None, commit_sha: str | None) 
 
 
 def is_sql_related(path: str) -> bool:
+    """判断文件是否属于 SQL 审核范围。
+
+    作用：
+    - 只保留 Mapper / DAO / Repository 这类可能携带 SQL 的文件。
+
+    输入：
+    - 仓库内相对路径。
+
+    输出：
+    - `True` 表示该文件需要进入 SQL 提取流程。
+    """
     return path.endswith(SQL_FILE_SUFFIXES)
 
 
 def collect_element_text(elem: ET.Element) -> str:
+    """递归提取 MyBatis XML 节点里的 SQL 文本。
+
+    作用：
+    - 不仅提取节点纯文本，还会把 `<if>`、`<where>`、`<include>` 等动态标签编码进结果。
+    - 这样后续规则仍能识别“这是动态 SQL”以及“这里引用了 include 片段”。
+
+    输入：
+    - MyBatis XML 中的一个 SQL 语句节点。
+
+    输出：
+    - 保留动态标签痕迹的原始 SQL 文本。
+    """
     parts: list[str] = []
     if elem.text:
         parts.append(elem.text)
@@ -84,6 +148,18 @@ def collect_element_text(elem: ET.Element) -> str:
 
 
 def extract_from_xml(path: Path) -> list[dict[str, Any]]:
+    """从 MyBatis XML 文件中提取可审核的 SQL 条目。
+
+    作用：
+    - 识别 `<select>`、`<update>`、`<delete>`、`<insert>`。
+    - 为每条语句附带文件路径、命名空间、语句 ID、原始 SQL、规范化 SQL、是否动态 SQL。
+
+    输入：
+    - Mapper XML 文件路径。
+
+    输出：
+    - SQL 条目列表，每个条目都是后续规则检查的基础数据结构。
+    """
     tree = ET.parse(path)
     root = tree.getroot()
     namespace = root.attrib.get("namespace", "")
@@ -109,6 +185,18 @@ def extract_from_xml(path: Path) -> list[dict[str, Any]]:
 
 
 def decode_java_string_literal(value: str) -> str:
+    """解析 Java 字符串字面量。
+
+    作用：
+    - 去掉首尾双引号。
+    - 把 `\\n`、`\\t`、Unicode 转义等还原成真实字符。
+
+    输入：
+    - Java 注解中的字符串字面量片段。
+
+    输出：
+    - 还原后的普通字符串。
+    """
     value = value.strip()
     if value.startswith('"') and value.endswith('"'):
         value = value[1:-1]
@@ -116,11 +204,34 @@ def decode_java_string_literal(value: str) -> str:
 
 
 def parse_annotation_payload(payload: str) -> str:
+    """把注解里的多段字符串拼装成 SQL。
+
+    作用：
+    - MyBatis 注解 SQL 可能写成多段字符串拼接，这里统一提取并按空格拼接。
+
+    输入：
+    - `@Select(...)` / `@Update(...)` 等注解括号中的原始文本。
+
+    输出：
+    - 可供审核的 SQL 文本。
+    """
     strings = re.findall(r'"(?:[^"\\]|\\.)*"', payload, flags=re.S)
     return " ".join(decode_java_string_literal(item) for item in strings)
 
 
 def extract_from_java(path: Path) -> list[dict[str, Any]]:
+    """从 Java 注解中提取可审核的 SQL 条目。
+
+    作用：
+    - 识别 `@Select`、`@Update`、`@Delete`、`@Insert`。
+    - 自动拼装 `包名.类型名.方法名` 形式的语句标识，方便在报告中定位。
+
+    输入：
+    - Java Mapper / DAO / Repository 文件路径。
+
+    输出：
+    - SQL 条目列表。
+    """
     text = path.read_text(encoding="utf-8")
     package_match = re.search(r"package\s+([\w.]+);", text)
     package_name = package_match.group(1) if package_match else ""
@@ -149,6 +260,20 @@ def extract_from_java(path: Path) -> list[dict[str, Any]]:
 
 
 def collect_sql_candidates(repo: Path, changed_files: list[str]) -> list[dict[str, Any]]:
+    """汇总所有需要审核的 SQL 条目。
+
+    作用：
+    - 遍历本次 MR 的变更文件。
+    - 只处理 SQL 相关文件。
+    - 同一文件即使在 diff 里出现多次，也只提取一次，避免重复审查。
+
+    输入：
+    - `repo`：仓库根目录。
+    - `changed_files`：Git diff 得到的相对路径列表。
+
+    输出：
+    - 来自 XML 和 Java 注解的全部 SQL 条目。
+    """
     sql_entries: list[dict[str, Any]] = []
     seen: set[Path] = set()
     for rel in changed_files:
@@ -166,10 +291,34 @@ def collect_sql_candidates(repo: Path, changed_files: list[str]) -> list[dict[st
 
 
 def normalize_for_rules(sql: str) -> str:
+    """为静态规则匹配准备 SQL。
+
+    作用：
+    - 在通用规范化基础上转成小写，减少规则正则的大小写分支。
+
+    输入：
+    - 原始或规范化 SQL。
+
+    输出：
+    - 适合做静态规则匹配的小写 SQL。
+    """
     return normalize_sql(sql).lower()
 
 
 def normalize_for_explain(sql: str) -> str:
+    """把 MyBatis SQL 转成尽量可执行的 EXPLAIN SQL。
+
+    作用：
+    - 把 `#{}`、`${}` 替换成占位值。
+    - 把 `<where>`、`<set>` 等动态标签做保守修正。
+    - 清理 `<include:...>` 和其他 XML 标签，让 SQL 尽量接近真实可执行语句。
+
+    输入：
+    - MyBatis 风格的 SQL。
+
+    输出：
+    - 用于 `EXPLAIN ...` 的 SQL 片段。
+    """
     sql = normalize_sql(sql)
     sql = re.sub(r"#\{[^}]+\}", "1", sql)
     sql = re.sub(r"\$\{[^}]+\}", "1", sql)
@@ -188,6 +337,21 @@ def normalize_for_explain(sql: str) -> str:
 
 
 def add_finding(findings: list[dict[str, Any]], entry: dict[str, Any], level: str, rule: str, reason: str, suggestion: str, block: bool, **extra: Any) -> None:
+    """向风险列表追加一条审核结果。
+
+    作用：
+    - 把规则命中信息统一封装成标准结构，便于后续汇总、排序和报告渲染。
+
+    输入：
+    - `findings`：当前累计风险列表。
+    - `entry`：对应的 SQL 条目。
+    - `level` / `rule` / `reason` / `suggestion`：规则结果描述。
+    - `block`：该问题是否应阻断合并。
+    - `extra`：额外信息，例如列名列表或 EXPLAIN 行。
+
+    输出：
+    - 无返回值，原地修改 `findings`。
+    """
     item = {
         "file": entry["file"],
         "statement_id": entry["statement_id"],
@@ -204,6 +368,20 @@ def add_finding(findings: list[dict[str, Any]], entry: dict[str, Any], level: st
 
 
 def looks_like_collection_query(entry: dict[str, Any], sql: str, config: dict[str, Any]) -> bool:
+    """判断 SQL 是否更像“列表型查询”。
+
+    作用：
+    - “缺分页”不应打在所有 SELECT 上，只想提示那些明显可能返回大量结果的列表查询。
+    - 这里采用启发式判断：方法名关键字、group by / order by、复合 where 等。
+
+    输入：
+    - `entry`：SQL 条目，用于读取语句 ID。
+    - `sql`：已小写规范化的 SQL。
+    - `config`：规则配置，用于读取方法名关键字。
+
+    输出：
+    - `True` 表示更像列表集合查询，适合继续检查分页缺失问题。
+    """
     statement_id = (entry.get("statement_id") or "").lower()
     keywords = [item.lower() for item in config.get("collection_query_keywords", [])]
     if any(keyword in statement_id for keyword in keywords):
@@ -218,6 +396,18 @@ def looks_like_collection_query(entry: dict[str, Any], sql: str, config: dict[st
 
 
 def run_static_rules(entry: dict[str, Any], config: dict[str, Any]) -> list[dict[str, Any]]:
+    """执行不依赖数据库的静态规则检查。
+
+    作用：
+    - 发现 `select *`、无 where 的 DML、前导 `%like`、缺分页、过长 `IN`、列上函数、动态 SQL 全表风险等问题。
+
+    输入：
+    - `entry`：单条 SQL 语句。
+    - `config`：规则配置。
+
+    输出：
+    - 命中的静态风险列表。
+    """
     findings: list[dict[str, Any]] = []
     sql = normalize_for_rules(entry["normalized_sql"])
     sql_type = entry["sql_type"].upper()
@@ -227,17 +417,17 @@ def run_static_rules(entry: dict[str, Any], config: dict[str, Any]) -> list[dict
     function_tokens = [item.lower() for item in config.get("indexed_column_functions", [])]
 
     if sql_type == "SELECT" and re.search(r"^select\s+\*\s+from\b", sql):
-        add_finding(findings, entry, "P1", "select_star", "查询使用 SELECT *，会扩大 I/O 和回表风险。", "明确列名，只查询必要字段。", "P1" in block_levels)
+        add_finding(findings, entry, "P1", "select_star", "查询使用了 SELECT *，会扩大 I/O 和回表风险。", "请明确列名，只查询必要字段。", "P1" in block_levels)
 
     if sql_type in {"UPDATE", "DELETE"} and " where " not in f" {sql} ":
-        add_finding(findings, entry, "P0", "dml_without_where", "UPDATE/DELETE 未检测到 WHERE，存在全表修改或删除风险。", "补充精确 WHERE 条件，并增加防呆保护。", "P0" in block_levels)
+        add_finding(findings, entry, "P0", "dml_without_where", "UPDATE/DELETE 未检测到 WHERE，存在全表修改或删除风险。", "请补充精确的 WHERE 条件，并增加防呆保护。", "P0" in block_levels)
 
     if " like " in f" {sql} " and re.search(r"like\s+['\"]?%", sql):
         add_finding(findings, entry, "P1", "leading_wildcard_like", "存在前导模糊 LIKE，索引通常无法命中。", "优先改成后缀模糊、倒排索引或搜索引擎方案。", "P1" in block_levels)
 
     if sql_type == "SELECT" and " from " in sql and not any(keyword in sql for keyword in pagination_keywords):
         if looks_like_collection_query(entry, sql, config):
-            add_finding(findings, entry, "P2", "missing_pagination", "SELECT 未识别到分页关键字，且语句形态更像列表集合查询，可能存在大结果集风险。", "确认是否需要 LIMIT/OFFSET/PageHelper 等分页手段。", False)
+            add_finding(findings, entry, "P2", "missing_pagination", "SELECT 未识别到分页关键字，且语句形态更像列表集合查询，可能存在大结果集风险。", "请确认是否需要 LIMIT/OFFSET/PageHelper 等分页手段。", False)
 
     in_markers = re.findall(r"\?", sql)
     if " in " in sql and len(in_markers) >= long_in_threshold:
@@ -247,12 +437,24 @@ def run_static_rules(entry: dict[str, Any], config: dict[str, Any]) -> list[dict
         add_finding(findings, entry, "P1", "function_on_column", "WHERE 条件中疑似对列做函数计算，可能导致索引失效。", "将函数计算移到参数侧，或建立函数索引/冗余列。", "P1" in block_levels)
 
     if entry.get("dynamic") and " where " not in f" {sql} ":
-        add_finding(findings, entry, "P1", "dynamic_sql_full_scan_risk", "动态 SQL 未见稳定 WHERE，参数缺省时可能退化为全表扫描。", "为动态 SQL 增加兜底过滤条件，并补充空参数测试。", "P1" in block_levels)
+        add_finding(findings, entry, "P1", "dynamic_sql_full_scan_risk", "动态 SQL 未见稳定 WHERE，参数缺省时可能退化为全表扫描。", "请为动态 SQL 增加兜底过滤条件，并补充空参数测试。", "P1" in block_levels)
 
     return findings
 
 
 def build_mysql_connection() -> pymysql.connections.Connection | None:
+    """创建审核用 MySQL 连接。
+
+    作用：
+    - 为索引元数据检查和 EXPLAIN 提供数据库连接。
+    - 如果环境变量不完整，则返回 `None`，让脚本退化成纯静态审查。
+
+    输入：
+    - 无显式参数，依赖 `AUDIT_DB_*` 系列环境变量。
+
+    输出：
+    - `pymysql` 连接对象，或 `None`。
+    """
     required = ["AUDIT_DB_HOST", "AUDIT_DB_NAME", "AUDIT_DB_USER", "AUDIT_DB_PASSWORD"]
     if not all(os.getenv(key) for key in required):
         return None
@@ -269,6 +471,17 @@ def build_mysql_connection() -> pymysql.connections.Connection | None:
 
 
 def split_table_name(raw_name: str) -> tuple[str, str]:
+    """拆分 `schema.table` 形式的表名。
+
+    作用：
+    - 兼容 SQL 中既可能写全限定名，也可能只写表名的情况。
+
+    输入：
+    - SQL 解析出的表名原始文本。
+
+    输出：
+    - `(schema, table)` 元组；如果没有显式 schema，则默认使用审核库名。
+    """
     cleaned = raw_name.strip().strip("`")
     if "." in cleaned:
         schema_name, table_name = cleaned.split(".", 1)
@@ -277,6 +490,19 @@ def split_table_name(raw_name: str) -> tuple[str, str]:
 
 
 def parse_table_refs(sql: str, sql_type: str) -> list[dict[str, str]]:
+    """从 SQL 中提取表引用信息。
+
+    作用：
+    - 识别 SELECT / UPDATE / DELETE / INSERT 中涉及的表、schema、别名。
+    - 供后续字段归属判断、索引元数据查询使用。
+
+    输入：
+    - `sql`：已规范化的 SQL。
+    - `sql_type`：SQL 类型。
+
+    输出：
+    - 表引用列表，每项包含 `schema`、`table`、`alias`。
+    """
     refs: list[dict[str, str]] = []
     lowered = normalize_for_rules(sql)
     if sql_type == "SELECT":
@@ -309,6 +535,18 @@ def parse_table_refs(sql: str, sql_type: str) -> list[dict[str, str]]:
 
 
 def extract_columns(section: str) -> list[str]:
+    """从条件片段中提取列名候选。
+
+    作用：
+    - 识别 `=`、`like`、`in`、`between` 等运算符左侧的字段。
+    - 用于 where / join 条件的索引候选分析。
+
+    输入：
+    - SQL 的某一段条件文本。
+
+    输出：
+    - 字段名列表。
+    """
     candidates: list[str] = []
     for match in re.finditer(
         r"([`.\w]+)\s*(=|!=|<>|>=|<=|>|<|\slike\b|\sregexp\b|\sin\b|\sbetween\b|\sis\b)",
@@ -323,6 +561,18 @@ def extract_columns(section: str) -> list[str]:
 
 
 def extract_list_columns(section: str) -> list[str]:
+    """从排序 / 分组列表中提取字段候选。
+
+    作用：
+    - 从 `order by a desc, b`、`group by a, b` 中抽取字段。
+    - 忽略函数表达式和关键字。
+
+    输入：
+    - `order by` 或 `group by` 后面的列表文本。
+
+    输出：
+    - 字段名列表。
+    """
     columns: list[str] = []
     for chunk in section.split(","):
         token = chunk.strip().lower()
@@ -337,6 +587,20 @@ def extract_list_columns(section: str) -> list[str]:
 
 
 def extract_index_usage_candidates(sql: str, sql_type: str) -> dict[str, Any]:
+    """提取用于索引分析的字段候选信息。
+
+    作用：
+    - 解析表引用。
+    - 提取 where、join、order by、group by 中的字段。
+    - 这些只是“候选字段”，真正是否有索引要到数据库查询元数据。
+
+    输入：
+    - `sql`：待分析 SQL。
+    - `sql_type`：SQL 类型。
+
+    输出：
+    - 包含表引用和各类字段列表的字典。
+    """
     normalized = normalize_for_rules(sql)
     table_refs = parse_table_refs(normalized, sql_type)
 
@@ -363,6 +627,19 @@ def extract_index_usage_candidates(sql: str, sql_type: str) -> dict[str, Any]:
 
 
 def fetch_index_metadata(cursor: Any, schema_name: str, table_name: str) -> dict[str, Any]:
+    """读取指定表的索引元数据。
+
+    作用：
+    - 查询 `information_schema.statistics`，收集索引名、索引列顺序。
+    - 同时构建“字段 -> 索引名列表”的映射，方便快速判断字段是否被索引覆盖。
+
+    输入：
+    - `cursor`：数据库游标。
+    - `schema_name` / `table_name`：目标表信息。
+
+    输出：
+    - 索引元数据字典。
+    """
     cursor.execute(
         """
         SELECT index_name, column_name, seq_in_index, non_unique
@@ -389,6 +666,19 @@ def fetch_index_metadata(cursor: Any, schema_name: str, table_name: str) -> dict
 
 
 def resolve_column_table(column: str, table_refs: list[dict[str, str]]) -> tuple[str | None, str]:
+    """把字段解析到具体表。
+
+    作用：
+    - 处理 `a.id` 这种带别名字段。
+    - 在单表查询场景下，把未带前缀的字段默认归属到该表。
+
+    输入：
+    - `column`：字段文本。
+    - `table_refs`：SQL 中解析出的表引用列表。
+
+    输出：
+    - `(table_name, pure_column)`；如果无法确定表归属，则表名返回 `None`。
+    """
     normalized = column.strip().strip("`").lower()
     if "." in normalized:
         alias, pure_column = normalized.split(".", 1)
@@ -407,12 +697,33 @@ def analyze_index_metadata(
     lookup: dict[str, Any],
     config: dict[str, Any],
 ) -> list[dict[str, Any]]:
+    """根据索引元数据判断字段是否缺少索引。
+
+    作用：
+    - 检查过滤列 / 关联列是否缺索引。
+    - 检查排序列 / 分组列是否缺索引。
+    - 结果用于静态推断潜在性能风险。
+
+    输入：
+    - `entry`：当前 SQL 条目。
+    - `metadata_cache`：已读取的索引元数据缓存。
+    - `lookup`：字段候选提取结果。
+    - `config`：规则配置。
+
+    输出：
+    - 索引元数据风险列表。
+    """
     findings: list[dict[str, Any]] = []
     block_levels = set(config.get("block_levels", []))
     table_refs = lookup.get("table_refs", [])
     table_map = {ref["table"].lower(): ref for ref in table_refs}
 
     def find_missing(rule_name: str, columns: list[str], level: str, reason_prefix: str, suggestion: str) -> None:
+        """在指定字段集合中找出未建立索引的字段。
+
+        作用：
+        - 作为 `analyze_index_metadata` 内部复用逻辑，避免 where / order / group 检查重复写一套。
+        """
         missing_columns: list[str] = []
         for column in columns:
             table_name, pure_column = resolve_column_table(column, table_refs)
@@ -442,25 +753,51 @@ def analyze_index_metadata(
         "missing_filter_index",
         lookup.get("where_columns", []) + lookup.get("join_columns", []),
         "P1",
-        "过滤或关联列未发现索引元数据",
-        "为过滤列/JOIN 列补充合适索引，并确认联合索引顺序是否匹配查询条件。",
+        "过滤列或关联列未发现索引元数据",
+        "请为过滤列或 JOIN 列补充合适索引，并确认联合索引顺序是否匹配查询条件。",
     )
     find_missing(
         "missing_sort_index",
         lookup.get("order_columns", []) + lookup.get("group_columns", []),
         "P2",
-        "排序或分组列未发现索引元数据",
-        "评估 ORDER BY/GROUP BY 列是否需要单列或联合索引支持。",
+        "排序列或分组列未发现索引元数据",
+        "请评估 ORDER BY/GROUP BY 列是否需要单列或联合索引支持。",
     )
     return findings
 
 
 def run_explain(cursor: Any, sql: str) -> list[dict[str, Any]]:
+    """执行 EXPLAIN 并返回执行计划。
+
+    作用：
+    - 将上一步规范化后的 SQL 送入数据库执行 `EXPLAIN`。
+
+    输入：
+    - `cursor`：数据库游标。
+    - `sql`：已转换成可执行形式的 SQL。
+
+    输出：
+    - EXPLAIN 返回的计划行列表。
+    """
     cursor.execute(f"EXPLAIN {sql}")
     return list(cursor.fetchall())
 
 
 def analyze_explain(entry: dict[str, Any], plan_rows: list[dict[str, Any]], config: dict[str, Any]) -> list[dict[str, Any]]:
+    """根据 EXPLAIN 结果判断运行时风险。
+
+    作用：
+    - 识别全表扫描、扫描行数过大、Using filesort、Using temporary、possible_keys 未命中等问题。
+    - 这是对静态规则的补充，基于真实数据库优化器判断。
+
+    输入：
+    - `entry`：当前 SQL 条目。
+    - `plan_rows`：EXPLAIN 返回的计划行。
+    - `config`：规则配置。
+
+    输出：
+    - EXPLAIN 风险列表。
+    """
     findings: list[dict[str, Any]] = []
     full_scan_threshold = int(os.getenv("AUDIT_FAIL_ON_FULL_SCAN_ROWS", "500"))
     warn_rows_threshold = int(os.getenv("AUDIT_MAX_ROWS", "1000"))
@@ -492,6 +829,17 @@ def analyze_explain(entry: dict[str, Any], plan_rows: list[dict[str, Any]], conf
 
 
 def summarize(findings: list[dict[str, Any]]) -> dict[str, int]:
+    """统计各风险等级的数量。
+
+    作用：
+    - 为最终 JSON 和 Markdown 报告提供汇总信息。
+
+    输入：
+    - 全部风险列表。
+
+    输出：
+    - 形如 `{"P0": x, "P1": y, "P2": z}` 的统计字典。
+    """
     return {
         "P0": sum(1 for item in findings if item["level"] == "P0"),
         "P1": sum(1 for item in findings if item["level"] == "P1"),
@@ -500,7 +848,18 @@ def summarize(findings: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Collect changed SQL, run static checks, inspect index metadata, and optionally EXPLAIN against a test database.")
+    """执行 GitLab SQL 审核主流程。
+
+    流程说明：
+    1. 解析命令行参数。
+    2. 计算本次 MR 的变更文件。
+    3. 从相关文件中提取 SQL。
+    4. 执行静态规则。
+    5. 若数据库可用，则补充索引元数据检查和 EXPLAIN。
+    6. 汇总结果并输出 JSON。
+    7. 若 `block_merge=true`，返回非零退出码以阻断合并。
+    """
+    parser = argparse.ArgumentParser(description="收集变更 SQL，执行静态规则检查、索引元数据检查，并在可用时运行 EXPLAIN。")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--rules", default="rules/mysql_rules.yaml")
     parser.add_argument("--output", required=True)
@@ -531,6 +890,7 @@ def main() -> int:
     if conn is None:
         explain_enabled = False
         index_metadata_enabled = False
+
     try:
         cursor = conn.cursor() if conn is not None else None
         for entry in entries:
