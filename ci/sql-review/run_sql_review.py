@@ -46,6 +46,12 @@ SQL_STOP_WORDS = {
     "asc",
     "desc",
 }
+MYBATIS_GUARDED_WHERE_TOKENS = (
+    "<where>",
+    "<include:example_where_clause>",
+    "<include:update_by_example_where_clause>",
+)
+PAGINATION_HINT_TOKENS = ("rowbounds", "pagehelper", "page", "pagination", "pageable")
 
 
 def normalize_sql(sql: str) -> str:
@@ -302,7 +308,48 @@ def normalize_for_rules(sql: str) -> str:
     输出：
     - 适合做静态规则匹配的小写 SQL。
     """
-    return normalize_sql(sql).lower()
+    normalized = normalize_sql(sql).lower()
+    # 先去掉 MyBatis 占位符，避免后续把 jdbcType、动态排序参数等误识别成列名或关键字。
+    return re.sub(r"[#$]\{[^}]+\}", " ?", normalized)
+
+
+def has_guarded_where(entry: dict[str, Any], sql: str) -> bool:
+    """判断语句是否已经具备稳定的 WHERE 保护。"""
+    if " where " in f" {sql} ":
+        return True
+    raw_sql = (entry.get("raw_sql") or "").lower()
+    normalized_sql = (entry.get("normalized_sql") or "").lower()
+    return any(token in raw_sql or token in normalized_sql for token in MYBATIS_GUARDED_WHERE_TOKENS)
+
+
+def should_check_dynamic_full_scan(entry: dict[str, Any], sql_type: str) -> bool:
+    """筛选真正需要检查“动态 SQL 全表风险”的语句。"""
+    if sql_type not in {"SELECT", "UPDATE", "DELETE"}:
+        return False
+    statement_id = (entry.get("statement_id") or "").lower()
+    raw_sql = (entry.get("raw_sql") or "").lower()
+    if "<foreach>" in raw_sql:
+        return False
+    mbg_safe_keywords = (
+        "byexample",
+        "example_where_clause",
+        "update_by_example_where_clause",
+    )
+    return not any(token in statement_id or token in raw_sql for token in mbg_safe_keywords)
+
+
+def has_pagination_hint(entry: dict[str, Any], sql: str, config: dict[str, Any]) -> bool:
+    """判断语句是否已经带有分页能力或分页调用约定。"""
+    pagination_keywords = [item.lower() for item in config.get("pagination_keywords", [])]
+    if any(keyword in sql for keyword in pagination_keywords):
+        return True
+    statement_id = (entry.get("statement_id") or "").lower()
+    return any(token in statement_id for token in PAGINATION_HINT_TOKENS)
+
+
+def is_count_query(sql: str) -> bool:
+    """判断是否为聚合计数查询。"""
+    return bool(re.search(r"^select\s+count\s*\(", sql))
 
 
 def normalize_for_explain(sql: str) -> str:
@@ -384,6 +431,8 @@ def looks_like_collection_query(entry: dict[str, Any], sql: str, config: dict[st
     """
     statement_id = (entry.get("statement_id") or "").lower()
     keywords = [item.lower() for item in config.get("collection_query_keywords", [])]
+    if is_count_query(sql):
+        return False
     if any(keyword in statement_id for keyword in keywords):
         return True
     if re.search(r"\bgroup\s+by\b|\border\s+by\b", sql):
@@ -413,19 +462,18 @@ def run_static_rules(entry: dict[str, Any], config: dict[str, Any]) -> list[dict
     sql_type = entry["sql_type"].upper()
     block_levels = set(config.get("block_levels", []))
     long_in_threshold = int(config.get("long_in_threshold", 5))
-    pagination_keywords = [item.lower() for item in config.get("pagination_keywords", [])]
     function_tokens = [item.lower() for item in config.get("indexed_column_functions", [])]
 
     if sql_type == "SELECT" and re.search(r"^select\s+\*\s+from\b", sql):
         add_finding(findings, entry, "P1", "select_star", "查询使用了 SELECT *，会扩大 I/O 和回表风险。", "请明确列名，只查询必要字段。", "P1" in block_levels)
 
-    if sql_type in {"UPDATE", "DELETE"} and " where " not in f" {sql} ":
+    if sql_type in {"UPDATE", "DELETE"} and not has_guarded_where(entry, sql):
         add_finding(findings, entry, "P0", "dml_without_where", "UPDATE/DELETE 未检测到 WHERE，存在全表修改或删除风险。", "请补充精确的 WHERE 条件，并增加防呆保护。", "P0" in block_levels)
 
     if " like " in f" {sql} " and re.search(r"like\s+['\"]?%", sql):
         add_finding(findings, entry, "P1", "leading_wildcard_like", "存在前导模糊 LIKE，索引通常无法命中。", "优先改成后缀模糊、倒排索引或搜索引擎方案。", "P1" in block_levels)
 
-    if sql_type == "SELECT" and " from " in sql and not any(keyword in sql for keyword in pagination_keywords):
+    if sql_type == "SELECT" and " from " in sql and not has_pagination_hint(entry, sql, config):
         if looks_like_collection_query(entry, sql, config):
             add_finding(findings, entry, "P2", "missing_pagination", "SELECT 未识别到分页关键字，且语句形态更像列表集合查询，可能存在大结果集风险。", "请确认是否需要 LIMIT/OFFSET/PageHelper 等分页手段。", False)
 
@@ -436,7 +484,7 @@ def run_static_rules(entry: dict[str, Any], config: dict[str, Any]) -> list[dict
     if any(token in sql for token in function_tokens):
         add_finding(findings, entry, "P1", "function_on_column", "WHERE 条件中疑似对列做函数计算，可能导致索引失效。", "将函数计算移到参数侧，或建立函数索引/冗余列。", "P1" in block_levels)
 
-    if entry.get("dynamic") and " where " not in f" {sql} ":
+    if entry.get("dynamic") and should_check_dynamic_full_scan(entry, sql_type) and not has_guarded_where(entry, sql):
         add_finding(findings, entry, "P1", "dynamic_sql_full_scan_risk", "动态 SQL 未见稳定 WHERE，参数缺省时可能退化为全表扫描。", "请为动态 SQL 增加兜底过滤条件，并补充空参数测试。", "P1" in block_levels)
 
     return findings
@@ -505,24 +553,34 @@ def parse_table_refs(sql: str, sql_type: str) -> list[dict[str, str]]:
     """
     refs: list[dict[str, str]] = []
     lowered = normalize_for_rules(sql)
+
+    def normalize_alias(alias: str | None, fallback: str) -> str:
+        candidate = (alias or fallback).strip("`").lower()
+        if not candidate or candidate in SQL_STOP_WORDS or candidate == "set":
+            return fallback.strip("`").lower()
+        return candidate
+
     if sql_type == "SELECT":
         for match in re.finditer(r"\b(from|join)\s+([`.\w]+)(?:\s+(?:as\s+)?(\w+))?", lowered):
             table_name = match.group(2)
-            alias = match.group(3) or table_name.split(".")[-1]
+            fallback_alias = table_name.split(".")[-1]
+            alias = normalize_alias(match.group(3), fallback_alias)
             schema_name, pure_table = split_table_name(table_name)
             refs.append({"schema": schema_name, "table": pure_table, "alias": alias})
     elif sql_type == "UPDATE":
         match = re.search(r"\bupdate\s+([`.\w]+)(?:\s+(?:as\s+)?(\w+))?", lowered)
         if match:
             table_name = match.group(1)
-            alias = match.group(2) or table_name.split(".")[-1]
+            fallback_alias = table_name.split(".")[-1]
+            alias = normalize_alias(match.group(2), fallback_alias)
             schema_name, pure_table = split_table_name(table_name)
             refs.append({"schema": schema_name, "table": pure_table, "alias": alias})
     elif sql_type == "DELETE":
         match = re.search(r"\bdelete\s+from\s+([`.\w]+)(?:\s+(?:as\s+)?(\w+))?", lowered)
         if match:
             table_name = match.group(1)
-            alias = match.group(2) or table_name.split(".")[-1]
+            fallback_alias = table_name.split(".")[-1]
+            alias = normalize_alias(match.group(2), fallback_alias)
             schema_name, pure_table = split_table_name(table_name)
             refs.append({"schema": schema_name, "table": pure_table, "alias": alias})
     elif sql_type == "INSERT":
@@ -556,6 +614,15 @@ def extract_columns(section: str) -> list[str]:
         raw_column = match.group(1).strip("`").lower()
         if raw_column in SQL_STOP_WORDS or raw_column.isdigit():
             continue
+        if raw_column.endswith("."):
+            continue
+        parts = [part for part in raw_column.split(".") if part]
+        if not parts:
+            continue
+        if any(part in SQL_STOP_WORDS or part == "set" for part in parts):
+            continue
+        if len(parts) > 2:
+            continue
         candidates.append(raw_column)
     return candidates
 
@@ -578,9 +645,12 @@ def extract_list_columns(section: str) -> list[str]:
         token = chunk.strip().lower()
         token = re.sub(r"\s+(asc|desc)\b", "", token)
         token = token.strip("` ")
-        if not token or token in SQL_STOP_WORDS:
+        if not token or token in SQL_STOP_WORDS or token == "?":
             continue
         if "(" in token and ")" in token:
+            continue
+        parts = [part for part in token.split(".") if part]
+        if any(part in SQL_STOP_WORDS or part == "set" for part in parts):
             continue
         columns.append(token)
     return columns
