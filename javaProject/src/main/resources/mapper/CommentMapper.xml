@@ -226,6 +226,9 @@
       <include refid="Example_Where_Clause" />
     </if>
   </select>
+  <select id="selectAllForSqlReviewTest" resultMap="BaseResultMap">
+    select * from COMMENT
+  </select>
   <update id="updateByExampleSelective" parameterType="map">
     <!--
       WARNING - @mbg.generated

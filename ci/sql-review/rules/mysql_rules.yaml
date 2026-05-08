@@ -1,0 +1,26 @@
+block_levels:
+  - P0
+  - P1
+long_in_threshold: 5
+explain_rows_threshold: 10000
+pagination_keywords:
+  - limit
+  - page
+  - rownum
+  - offset
+collection_query_keywords:
+  - list
+  - page
+  - findall
+  - queryall
+  - search
+  - selectall
+  - getall
+indexed_column_functions:
+  - date(
+  - year(
+  - month(
+  - substr(
+  - substring(
+  - upper(
+  - lower(
